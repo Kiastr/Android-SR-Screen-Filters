@@ -13,4 +13,6 @@
     <string name="pseudo_mv_label">伪运动矢量插值 (Pseudo-MV)</string>
     <string name="float_button_stop">停止服务</string>
     <string name="float_button_home">返回主界面</string>
+    <string name="github_url">https://github.com/Kiastr/Android-SR-Screen-Filters</string>
+    <string name="github_label">查看 GitHub 仓库</string>
 </resources>

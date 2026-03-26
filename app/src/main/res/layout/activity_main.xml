@@ -378,6 +378,18 @@
                     android:lineSpacingExtra="4dp"
                     android:layout_marginTop="8dp"/>
 
+                <TextView
+                    android:id="@+id/githubLink"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/github_label"
+                    android:textSize="13sp"
+                    android:textColor="#FF03DAC5"
+                    android:layout_marginTop="16dp"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:background="?attr/selectableItemBackground"/>
+
             </LinearLayout>
         </androidx.cardview.widget.CardView>
 

@@ -27,7 +27,7 @@ public class MainActivity extends AppCompatActivity {
     private static final int REQUEST_OVERLAY_PERMISSION = 1002;
 
     private MaterialButton toggleButton;
-    private TextView statusText, fpsText, scaleValue, strengthValue, pseudoMVValue, opacityValue, fsrSharpnessValue, strengthLabel, fsrSharpnessLabel;
+    private TextView statusText, fpsText, scaleValue, strengthValue, pseudoMVValue, opacityValue, fsrSharpnessValue, strengthLabel, fsrSharpnessLabel, githubLink;
     private SeekBar scaleSeekBar, strengthSeekBar, pseudoMVSeekBar, opacitySeekBar, fsrSharpnessSeekBar;
     private SwitchCompat floatButtonSwitch, fsrSwitch;
     private boolean isRunning = false;
@@ -65,6 +65,7 @@ public class MainActivity extends AppCompatActivity {
         
         strengthLabel = findViewById(R.id.strengthLabel);
         fsrSharpnessLabel = findViewById(R.id.fsrSharpnessLabel);
+        githubLink = findViewById(R.id.githubLink);
 
         scaleSeekBar = findViewById(R.id.scaleSeekBar);
         strengthSeekBar = findViewById(R.id.strengthSeekBar);
@@ -158,6 +159,11 @@ public class MainActivity extends AppCompatActivity {
             } else {
                 startUpscaling();
             }
+        });
+
+        githubLink.setOnClickListener(v -> {
+            Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(getString(R.string.github_url)));
+            startActivity(intent);
         });
 
         IntentFilter filter = new IntentFilter();
