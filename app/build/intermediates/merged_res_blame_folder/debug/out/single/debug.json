@@ -1,7 +1,11 @@
 [
     {
-        "merged": "com.anime4k.screen.app-merged_res-29:/drawable_ic_launcher.xml.flat",
-        "source": "com.anime4k.screen.app-main-31:/drawable/ic_launcher.xml"
+        "merged": "/home/ubuntu/.gradle/daemon/7.5.1/com.anime4k.screen.app-merged_res-29:/drawable_ic_launcher.xml.flat",
+        "source": "/home/ubuntu/.gradle/daemon/7.5.1/com.anime4k.screen.app-main-31:/drawable/ic_launcher.xml"
+    },
+    {
+        "merged": "/home/ubuntu/.gradle/daemon/7.5.1/com.anime4k.screen.app-merged_res-29:/layout_activity_main.xml.flat",
+        "source": "/home/ubuntu/.gradle/daemon/7.5.1/com.anime4k.screen.app-main-31:/layout/activity_main.xml"
     },
     {
         "merged": "com.anime4k.screen.app-merged_res-29:/layout_activity_main.xml.flat",

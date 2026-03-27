@@ -160,6 +160,11 @@ public class MainActivity extends AppCompatActivity {
             }
         });
 
+        findViewById(R.id.githubLink).setOnClickListener(v -> {
+            Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/Kiastr/Android-SR-Screen-Filters"));
+            startActivity(intent);
+        });
+
         IntentFilter filter = new IntentFilter();
         filter.addAction("com.anime4k.screen.FPS_UPDATE");
         filter.addAction("com.anime4k.screen.SERVICE_STOPPED");

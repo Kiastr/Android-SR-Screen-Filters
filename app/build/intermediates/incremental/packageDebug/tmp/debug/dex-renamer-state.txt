@@ -1,9 +1,9 @@
-#Thu Mar 26 14:49:32 EDT 2026
-base.2=/home/ubuntu/Anime4KScreen_Fix/app/build/intermediates/dex/debug/mergeProjectDexDebug/13/classes.dex
+#Fri Mar 27 12:22:30 EDT 2026
+base.2=/home/ubuntu/Android-SR-Screen-Filters/app/build/intermediates/dex/debug/mergeProjectDexDebug/13/classes.dex
 path.2=13/classes.dex
-base.1=/home/ubuntu/Anime4KScreen_Fix/app/build/intermediates/dex/debug/mergeProjectDexDebug/0/classes.dex
+base.1=/home/ubuntu/Android-SR-Screen-Filters/app/build/intermediates/dex/debug/mergeProjectDexDebug/0/classes.dex
 path.1=0/classes.dex
-base.0=/home/ubuntu/Anime4KScreen_Fix/app/build/intermediates/dex/debug/mergeExtDexDebug/classes.dex
+base.0=/home/ubuntu/Android-SR-Screen-Filters/app/build/intermediates/dex/debug/mergeExtDexDebug/classes.dex
 renamed.2=classes3.dex
 renamed.1=classes2.dex
 renamed.0=classes.dex
