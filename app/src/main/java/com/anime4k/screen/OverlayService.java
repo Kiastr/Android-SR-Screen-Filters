@@ -267,7 +267,7 @@ public class OverlayService extends Service {
             initEGL();
             renderer = new Anime4KRenderer();
             renderer.setRefineStrength(refineStrength);
-            renderer.setPseudoMVStrength(pseudoMVStrength);
+            renderer.setATWStrength(pseudoMVStrength); // Use ATW instead of PseudoMV
             renderer.setFsrEnabled(fsrEnabled);
             renderer.setFsrSharpness(fsrSharpness);
             renderer.init(captureWidth, captureHeight, screenWidth, screenHeight);
