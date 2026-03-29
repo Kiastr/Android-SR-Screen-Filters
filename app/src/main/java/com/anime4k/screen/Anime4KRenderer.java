@@ -751,7 +751,10 @@ public class Anime4KRenderer {
 
         } else {
             // ---- FSR 管线 ----
+            // [FIX-v1.9.3] 强制清空 FBO，防止 Alpha/颜色值跨帧累积导致失真
             GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fbo[6]);
+            GLES30.glClearColor(0f, 0f, 0f, 0f);
+            GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT);
             GLES30.glViewport(0, 0, outputWidth, outputHeight);
             GLES30.glUseProgram(programFsrEasu);
             bindTex(0, inputTexture); GLES30.glUniform1i(uEasu_texture, 0);
@@ -760,6 +763,8 @@ public class Anime4KRenderer {
             drawQuad();
 
             GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fbo[4]);
+            GLES30.glClearColor(0f, 0f, 0f, 0f);
+            GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT);
             GLES30.glViewport(0, 0, outputWidth, outputHeight);
             GLES30.glUseProgram(programFsrRcas);
             bindTex(0, fsrTempTexture); GLES30.glUniform1i(uRcas_texture, 0);
