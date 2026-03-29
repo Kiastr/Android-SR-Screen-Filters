@@ -230,8 +230,16 @@ public class OverlayService extends Service {
         captureWidth  = ((int) (screenWidth  * captureScale) / 2) * 2;
         captureHeight = ((int) (screenHeight * captureScale) / 2) * 2;
 
+        // [BUG-FIX-2] 方向变化时 SurfaceView 会重建，必须先将 surfaceReady 置 false
+        // 防止 processFrame 在新 Surface 就绪前向无效表面渲染
+        surfaceReady = false;
+
         processingHandler.post(() -> {
             try {
+                // [BUG-FIX-3] 重置节流标志：方向变化可能发生在帧处理中途，
+                // 若不重置，frameInFlight 可能永远卡在 true，导致叠加层永久失效
+                frameInFlight.set(false);
+
                 if (virtualDisplay != null) { virtualDisplay.release(); virtualDisplay = null; }
                 if (imageReader != null)    { imageReader.close();      imageReader    = null; }
 
@@ -254,16 +262,19 @@ public class OverlayService extends Service {
                         imageReader.getSurface(), null, processingHandler);
 
                 // [LS-1] 方向变化后重新注册推模式监听器
+                // [BUG-FIX-1] 必须用 processingHandler.post 投递，不能直接调用 processFrame()
+                // 直接调用会在 ImageReader 回调线程中同步执行，阻塞内部回调队列，导致后续帧无法到达
                 imageReader.setOnImageAvailableListener(reader -> {
                     if (!isRunning) return;
                     if (frameInFlight.compareAndSet(false, true)) {
-                        processFrame();
+                        processingHandler.post(OverlayService.this::processFrame);
                     }
                 }, processingHandler);
 
                 Log.d(TAG, "Orientation change handled: " + screenWidth + "x" + screenHeight);
             } catch (Exception e) {
                 Log.e(TAG, "Error on orientation change", e);
+                frameInFlight.set(false); // 异常时也要确保释放节流标志
             }
         });
     }
@@ -359,11 +370,15 @@ public class OverlayService extends Service {
 
             // [LS-1] 推模式捕获：ImageReader 硬件回调驱动帧调度
             // 当 VirtualDisplay 渲染完一帧放入 Buffer 时立即触发，无需 VSYNC 轮询
+            // 重要：监听器必须在 EGL 初始化完成后才注册，否则回调会在 renderer 准备好之前触发
+            // 监听器运行在 processingHandler 线程上，与 EGL 上下文共享同一线程，安全
             imageReader.setOnImageAvailableListener(reader -> {
                 if (!isRunning) return;
-                // [LS-2] 节流保护：仅当上一帧处理完毕时才处理新帧
+                // [LS-2] 节流保护：仅当上一帧处理完毕时才投递新帧
+                // 注意：必须用 processingHandler.post 而非直接调用 processFrame()
+                // 直接调用会在回调线程中执行，阶塞 ImageReader 内部的回调队列，导致后续帧无法到达
                 if (frameInFlight.compareAndSet(false, true)) {
-                    processFrame();
+                    processingHandler.post(OverlayService.this::processFrame);
                 }
                 // 若处理线程繁忙，acquireLatestImage 在 processFrame 中会取到最新帧
                 // 旧帧自动被丢弃，延迟始终最低
