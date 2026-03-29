@@ -162,7 +162,7 @@ public class MainActivity extends AppCompatActivity {
         });
 
         findViewById(R.id.githubLink).setOnClickListener(v -> {
-            Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/Kiastr/Android-SR-Screen-Filters"));
+            Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/Kiastr/lossless_scaling_Android"));
             startActivity(intent);
         });
 

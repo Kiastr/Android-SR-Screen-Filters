@@ -348,7 +348,7 @@
             android:id="@+id/githubLink"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="GitHub: Kiastr/Android-SR-Screen-Filters"
+            android:text="GitHub链接Link：Kiastr/lossless_scaling_Android"
             android:textSize="12sp"
             android:textColor="#88FFFFFF"
             android:padding="8dp"

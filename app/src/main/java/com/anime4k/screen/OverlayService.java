@@ -574,6 +574,22 @@ public class OverlayService extends Service {
                 case 1:
                     isPaused = !isPaused;
                     if (isPaused) {
+                        // 先在 GPU 层主动渲染一帧全透明画面，清空 Surface 缓冲区中的残留内容
+                        // 仅靠 WindowManager.alpha=0 无法清除 GPU 缓冲区，在某些设备上会残留
+                        processingHandler.post(() -> {
+                            try {
+                                if (eglOverlaySurface != null && eglOverlaySurface != EGL14.EGL_NO_SURFACE
+                                        && renderer != null) {
+                                    EGL14.eglMakeCurrent(eglDisplay, eglOverlaySurface, eglOverlaySurface, eglContext);
+                                    renderer.clearSurface(screenWidth, screenHeight);
+                                    EGL14.eglSwapBuffers(eglDisplay, eglOverlaySurface);
+                                    makePbufferCurrent();
+                                }
+                            } catch (Exception e) {
+                                Log.e(TAG, "Error clearing overlay on pause", e);
+                            }
+                        });
+                        // 同时将窗口透明度设为 0，双重保险
                         mainHandler.post(() -> {
                             if (overlaySurfaceView != null && overlayParams != null) {
                                 overlayParams.alpha = 0.0f;

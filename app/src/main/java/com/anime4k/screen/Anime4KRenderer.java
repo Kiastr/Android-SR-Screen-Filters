@@ -877,6 +877,18 @@ public class Anime4KRenderer {
         drawVao(vao[1]);
     }
 
+    /**
+     * 清空当前绑定的 EGL 表面，将其填充为全透明黑色。
+     * 必须在 EGL 表面已经通过 eglMakeCurrent 绑定后才能调用。
+     * 用于暂停时主动清除 GPU 缓冲区中的残留画面，而非依赖 WindowManager.alpha。
+     */
+    public void clearSurface(int screenWidth, int screenHeight) {
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0);
+        GLES30.glViewport(0, 0, screenWidth, screenHeight);
+        GLES30.glClearColor(0f, 0f, 0f, 0f);
+        GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT);
+    }
+
     // =================================================================
     // 辅助方法
     // =================================================================
