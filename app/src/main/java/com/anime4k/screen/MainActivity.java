@@ -77,7 +77,7 @@ public class MainActivity extends AppCompatActivity {
         fsrSwitch = findViewById(R.id.fsrSwitch);
 
         // Restore preferences
-        scaleSeekBar.setProgress(prefs.getInt("scale", 50));
+        scaleSeekBar.setProgress(prefs.getInt("scale", 75)); // [LS-3] 默认 75% 减少超分放大倍率，降低边缘扩散拖影感
         strengthSeekBar.setProgress(prefs.getInt("strength", 50));
         pseudoMVSeekBar.setProgress(prefs.getInt("pseudoMV", 50));
         opacitySeekBar.setProgress(prefs.getInt("opacity", 100));

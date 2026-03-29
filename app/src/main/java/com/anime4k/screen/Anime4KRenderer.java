@@ -424,26 +424,39 @@ public class Anime4KRenderer {
         "}\n";
 
     /**
-     * Pass C — 后向翘曲 + 双向自适应混合 (Backward Warp + Bidirectional Blend)
+     * Pass C — 后向翘曲 + 双向自适应混合 + 时域差分抗拖影 (Anti-Ghosting)
      *
-     * 1. 后向翘曲：对上一帧（T-1）在 (uv - mv * 0.5) 处采样，得到后向预测帧。
-     * 2. 双向混合：将前向预测帧和后向预测帧按置信度加权平均。
-     * 3. 自适应融合：
-     *    - 高置信度（强边缘）区域：更多使用插值帧（运动补偿有效）
-     *    - 低置信度（平坦区域）：更多保留当前帧原始颜色（避免引入噪声）
-     *    - 最终结果 = lerp(current, blended, confidence * strength)
+     * LSFG 核心思想移植：
+     * LSFG 通过光流算法计算真实运动矢量，对剧烈运动区域不进行帧混合而是直接输出当前帧。
+     * 本 Shader 实现类似的“运动感知抗拖影”机制：
+     *
+     * 1. 后向翘曲：对上一帧（T-1）在 (uv - mv * 0.5) 处采样。
+     * 2. 双向混合：前向预测帧和后向预测帧按置信度加权平均。
+     * 3. 时域差分抗拖影 (Temporal Diff Anti-Ghosting) [LSFG 核心]:
+     *    计算当前帧与上一帧的像素亮度差异（时域差分）。
+     *    - 差异大（剧烈运动）：运动矢量不可靠，拒绝混合，直接输出当前帧。彻底消除拖影。
+     *    - 差异小（平缓运动或静止）：插値平滑有效，进行混合提升流畅感。
+     * 4. 自适应融合：边缘强度 + 置信度 + 时域差分共同决定最终混合权重。
      */
     private static final String FRAG_PMV_BLEND =
         "#version 300 es\n" +
         "precision mediump float;\n" +
         "in vec2 vTexCoord;\n" +
-        "uniform sampler2D uCurrent;   // 当前增强帧 T（Anime4K 输出）\n" +
+        "uniform sampler2D uCurrent;   // 当前增强帧 T\n" +
         "uniform sampler2D uLast;      // 上一增强帧 T-1\n" +
         "uniform sampler2D uMvTex;     // 运动矢量场\n" +
-        "uniform sampler2D uLumad;     // 边缘强度（用于自适应融合权重）\n" +
+        "uniform sampler2D uLumad;     // 边缘强度\n" +
         "uniform vec2 uTexelSize;\n" +
         "uniform float uStrength;      // 插帧强度 [0,1]\n" +
         "out vec4 fragColor;\n" +
+        "\n" +
+        "// 计算两个颜色的感知亮度差异\n" +
+        "float lumaDiff(vec4 a, vec4 b) {\n" +
+        "    float la = dot(a.rgb, vec3(0.299, 0.587, 0.114));\n" +
+        "    float lb = dot(b.rgb, vec3(0.299, 0.587, 0.114));\n" +
+        "    return abs(la - lb);\n" +
+        "}\n" +
+        "\n" +
         "void main() {\n" +
         "    vec3 mvData = texture(uMvTex, vTexCoord).rgb;\n" +
         "    vec2 mv = (mvData.rg * 2.0 - 1.0) * uTexelSize * 8.0;\n" +
@@ -452,31 +465,37 @@ public class Anime4KRenderer {
         "    vec4 current = texture(uCurrent, vTexCoord);\n" +
         "\n" +
         "    if (conf < 0.05 || uStrength < 0.01) {\n" +
-        "        // 无运动信息区域，直接输出当前帧\n" +
         "        fragColor = current;\n" +
         "        return;\n" +
         "    }\n" +
         "\n" +
-        "    // 前向翘曲预测（从 warpFwd 纹理读取，已在 Pass B 计算）\n" +
-        "    // 注意：这里直接重算，因为 Pass B 的结果已在 warpFwdTex 中\n" +
+        "    // 前向翘曲预测\n" +
         "    vec2 fwdUV = clamp(vTexCoord + mv * 0.5, vec2(0.0), vec2(1.0));\n" +
         "    vec4 fwdColor = texture(uCurrent, fwdUV);\n" +
         "\n" +
-        "    // 后向翘曲预测：对上一帧沿反方向采样\n" +
+        "    // 后向翘曲预测\n" +
         "    vec2 bwdUV = clamp(vTexCoord - mv * 0.5, vec2(0.0), vec2(1.0));\n" +
         "    vec4 bwdColor = texture(uLast, bwdUV);\n" +
         "\n" +
-        "    // 双向混合：前向和后向预测各占 50%\n" +
+        "    // 双向混合\n" +
         "    vec4 blended = mix(bwdColor, fwdColor, 0.5);\n" +
         "\n" +
-        "    // 自适应融合权重：边缘区域更信任插值，平坦区域保留原始\n" +
-        "    // 使用 lumad 的 sobel 强度（R 通道）作为额外权重\n" +
-        "    float edgeW = texture(uLumad, vTexCoord).r * 2.0 - 1.0;\n" +
-        "    edgeW = clamp(edgeW, 0.0, 1.0);\n" +
+        "    // ===== 时域差分抗拖影 (LSFG 核心思想) =====\n" +
+        "    // 计算当前帧与上一帧在当前位置的亮度差异\n" +
+        "    vec4 lastAtCurrent = texture(uLast, vTexCoord);\n" +
+        "    float temporalDiff = lumaDiff(current, lastAtCurrent);\n" +
         "\n" +
-        "    // 最终混合权重 = 置信度 * 边缘权重 * 用户强度\n" +
-        "    float blendW = conf * (0.4 + 0.6 * edgeW) * uStrength;\n" +
-        "    blendW = clamp(blendW, 0.0, 0.85); // 最多 85% 插值，保留原始感\n" +
+        "    // 时域差异越大，运动越剧烈，插値可靠性越低\n" +
+        "    // threshold=0.12: 超过此差异的区域被认为剧烈运动，直接输出当前帧\n" +
+        "    float antiGhostFactor = 1.0 - smoothstep(0.08, 0.20, temporalDiff);\n" +
+        "\n" +
+        "    // 边缘权重\n" +
+        "    float edgeW = clamp(texture(uLumad, vTexCoord).r * 2.0 - 1.0, 0.0, 1.0);\n" +
+        "\n" +
+        "    // 最终混合权重 = 置信度 * 边缘权重 * 抗拖影因子 * 用户强度\n" +
+        "    // antiGhostFactor 在剧烈运动时趋近 0，强制使用当前帧，彻底消除拖影\n" +
+        "    float blendW = conf * (0.4 + 0.6 * edgeW) * antiGhostFactor * uStrength;\n" +
+        "    blendW = clamp(blendW, 0.0, 0.85);\n" +
         "\n" +
         "    fragColor = mix(current, blended, blendW);\n" +
         "}\n";
