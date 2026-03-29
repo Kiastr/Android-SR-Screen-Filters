@@ -348,15 +348,19 @@ public class OverlayService extends Service {
             @Override public void onStop() { stopSelf(); }
         }, processingHandler);
 
-        // [CPU-2] 3 个缓冲区
-        imageReader = ImageReader.newInstance(captureWidth, captureHeight,
-                PixelFormat.RGBA_8888, 3);
-        virtualDisplay = mediaProjection.createVirtualDisplay(
-                "Anime4KCapture", captureWidth, captureHeight, screenDensity,
-                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                imageReader.getSurface(), null, processingHandler);
-
+        // [BUG-FIX-4] 竞态条件修复：
+        // 必须将 ImageReader 创建、VirtualDisplay 创建、EGL 初始化、监听器注册
+        // 全部放在同一个 processingHandler.post() 中串行执行。
+        //
+        // 原来的错误写法：createVirtualDisplay 在 post() 外面，导致 VirtualDisplay
+        // 立即开始向 ImageReader 推帧，3 个缓冲区很快被填满。等 post() 里的
+        // setOnImageAvailableListener 执行时，缓冲区已满，新帧无法入队，
+        // 回调永远不会触发，叠加层从启动起就完全失效。
         processingHandler.post(() -> {
+            // [CPU-2] 3 个缓冲区，在 EGL 初始化前创建 ImageReader 但不启动 VirtualDisplay
+            imageReader = ImageReader.newInstance(captureWidth, captureHeight,
+                    PixelFormat.RGBA_8888, 3);
+
             initEGL();
             renderer = new Anime4KRenderer();
             renderer.setRefineStrength(refineStrength);
@@ -368,21 +372,23 @@ public class OverlayService extends Service {
             isRunning = true;
             fpsStartTimeNs = System.nanoTime();
 
-            // [LS-1] 推模式捕获：ImageReader 硬件回调驱动帧调度
-            // 当 VirtualDisplay 渲染完一帧放入 Buffer 时立即触发，无需 VSYNC 轮询
-            // 重要：监听器必须在 EGL 初始化完成后才注册，否则回调会在 renderer 准备好之前触发
-            // 监听器运行在 processingHandler 线程上，与 EGL 上下文共享同一线程，安全
+            // [LS-1] 先注册监听器，再创建 VirtualDisplay
+            // 这样 VirtualDisplay 产生的第一帧就能被监听器捕获到
             imageReader.setOnImageAvailableListener(reader -> {
                 if (!isRunning) return;
                 // [LS-2] 节流保护：仅当上一帧处理完毕时才投递新帧
-                // 注意：必须用 processingHandler.post 而非直接调用 processFrame()
-                // 直接调用会在回调线程中执行，阶塞 ImageReader 内部的回调队列，导致后续帧无法到达
+                // 必须用 processingHandler.post 而非直接调用 processFrame()
+                // 直接调用会在回调线程中同步执行，阻塞 ImageReader 内部回调队列
                 if (frameInFlight.compareAndSet(false, true)) {
                     processingHandler.post(OverlayService.this::processFrame);
                 }
-                // 若处理线程繁忙，acquireLatestImage 在 processFrame 中会取到最新帧
-                // 旧帧自动被丢弃，延迟始终最低
             }, processingHandler);
+
+            // VirtualDisplay 最后创建，此时监听器已就绪，不会丢失任何帧
+            virtualDisplay = mediaProjection.createVirtualDisplay(
+                    "Anime4KCapture", captureWidth, captureHeight, screenDensity,
+                    DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                    imageReader.getSurface(), null, processingHandler);
         });
     }
 
