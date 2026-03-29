@@ -3,14 +3,17 @@ package com.anime4k.screen;
 /**
  * AMD FidelityFX Super Resolution (FSR) 1.0 — 移动端适配实现
  *
- * v1.9.3 彻底修复：FSR 模式在半透明叠加层下的颜色失真和色块。
+ * v1.9.4 调试修复：彻底移除 RCAS 锐化 Pass。
  *
- * 核心改进：
- *   1. 增加防御性计算：在 RCAS 锐化权重计算中增加 epsilon 防止除以零，
- *      并对输入像素进行 initial clamp，防止 NaN 或极值污染后续计算。
- *   2. 严格 Alpha 隔离：确保 EASU 和 RCAS 过程不破坏原始 Alpha 通道，
- *      且输出 Alpha 始终限制在 [0, 1]，防止系统合成器崩溃产生色块。
- *   3. 提高 mediump 稳定性：通过重新组织算式，减少中间溢出风险。
+ * 核心发现：
+ *   在 FSR 模式下，即便增加了 clamp，只要 RCAS 开启，在半透明叠加层下依然会出现颜色失真。
+ *   这说明 RCAS 的 5-tap 十字采样权重计算（中心像素增强，周围像素负权重）在某些
+ *   移动端 GPU 驱动上，处理 PixelFormat.TRANSLUCENT 表面时会触发不可控的合成异常。
+ *
+ * 解决方案：
+ *   1. 彻底移除 RCAS Pass，仅保留 EASU。
+ *   2. 在 EASU 中强制输出 Alpha = 1.0，完全依靠 WindowManager 的 alpha 混合。
+ *   3. 进一步简化 EASU，确保其输出是绝对干净的 RGBA8。
  */
 public class FSRShaders {
 
@@ -47,9 +50,8 @@ public class FSRShaders {
         "void main() {\n" +
         "    vec2 texelSize = uEasuCon1.xy;\n" +
         "\n" +
-        "    // 初始采样并进行安全限制，防止异常值输入\n" +
-        "    vec4 tC = texture(uTexture, vTexCoord);\n" +
-        "    vec3 cC = clamp(tC.rgb, 0.0, 1.0);\n" +
+        "    // 初始采样\n" +
+        "    vec3 cC = clamp(texture(uTexture, vTexCoord).rgb, 0.0, 1.0);\n" +
         "    \n" +
         "    // 5-tap 采样用于梯度估计\n" +
         "    vec3 cT = clamp(texture(uTexture, vTexCoord + vec2(0.0, -texelSize.y)).rgb, 0.0, 1.0);\n" +
@@ -88,51 +90,18 @@ public class FSRShaders {
         "    }\n" +
         "\n" +
         "    vec3 finalColor = mix(cC, colorEdge, edgeStrength);\n" +
-        "    fragColor = vec4(clamp(finalColor, 0.0, 1.0), clamp(tC.a, 0.0, 1.0));\n" +
+        "    // 强制输出 Alpha=1.0，完全依靠系统层的透明度混合，消除 FBO 内部 Alpha 残留\n" +
+        "    fragColor = vec4(clamp(finalColor, 0.0, 1.0), 1.0);\n" +
         "}\n";
 
-    // =================================================================
-    // RCAS: Robust Contrast Adaptive Sharpening (FSR 1.0)
-    // =================================================================
+    // v1.9.4 彻底移除 RCAS 实现，Passthrough 代替
     public static final String FRAG_RCAS =
         "#version 300 es\n" +
         "precision mediump float;\n" +
         "in vec2 vTexCoord;\n" +
         "out vec4 fragColor;\n" +
         "uniform sampler2D uTexture;\n" +
-        "uniform vec4 uRcasCon; // (Sharpness, 0, 0, 0)\n" +
-        "\n" +
         "void main() {\n" +
-        "    vec2 rcpSize = 1.0 / vec2(textureSize(uTexture, 0));\n" +
-        "    float sharpness = uRcasCon.x;\n" +
-        "\n" +
-        "    // 5-tap 十字形采样，强制限制在 [0,1] 防止异常值扩散\n" +
-        "    vec4 tC = texture(uTexture, vTexCoord);\n" +
-        "    vec3 c = clamp(tC.rgb, 0.0, 1.0);\n" +
-        "    vec3 t = clamp(texture(uTexture, vTexCoord + vec2(0.0, -rcpSize.y)).rgb, 0.0, 1.0);\n" +
-        "    vec3 b = clamp(texture(uTexture, vTexCoord + vec2(0.0,  rcpSize.y)).rgb, 0.0, 1.0);\n" +
-        "    vec3 l = clamp(texture(uTexture, vTexCoord + vec2(-rcpSize.x, 0.0)).rgb, 0.0, 1.0);\n" +
-        "    vec3 r = clamp(texture(uTexture, vTexCoord + vec2( rcpSize.x, 0.0)).rgb, 0.0, 1.0);\n" +
-        "\n" +
-        "    float lumaC = dot(c, vec3(0.299, 0.587, 0.114));\n" +
-        "    float lumaT = dot(t, vec3(0.299, 0.587, 0.114));\n" +
-        "    float lumaB = dot(b, vec3(0.299, 0.587, 0.114));\n" +
-        "    float lumaL = dot(l, vec3(0.299, 0.587, 0.114));\n" +
-        "    float lumaR = dot(r, vec3(0.299, 0.587, 0.114));\n" +
-        "\n" +
-        "    float lumaMin = min(lumaC, min(min(lumaT, lumaB), min(lumaL, lumaR)));\n" +
-        "    float lumaMax = max(lumaC, max(max(lumaT, lumaB), max(lumaL, lumaR)));\n" +
-        "\n" +
-        "    // RCAS 权重计算增加 epsilon，防止 max(lumaMax, 0.001) 除以零导致 NaN\n" +
-        "    float adaptiveW = sharpness * clamp(\n" +
-        "        min(lumaMin, 1.0 - lumaMax) / (lumaMax + 0.0001),\n" +
-        "        0.0, 1.0\n" +
-        "    );\n" +
-        "\n" +
-        "    // 锐化计算\n" +
-        "    vec3 sharpened = c + (c - (t + b + l + r) * 0.25) * adaptiveW;\n" +
-        "    \n" +
-        "    // 最终输出：双重 clamp 保护，确保 Alpha 通道不被破坏\n" +
-        "    fragColor = vec4(clamp(sharpened, 0.0, 1.0), clamp(tC.a, 0.0, 1.0));\n" +
+        "    fragColor = texture(uTexture, vTexCoord);\n" +
         "}\n";
 }
