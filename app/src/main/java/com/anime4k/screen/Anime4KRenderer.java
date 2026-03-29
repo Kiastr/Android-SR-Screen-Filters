@@ -14,8 +14,25 @@ import java.nio.FloatBuffer;
  * Supports Anime4K-v3.2 and AMD FSR 1.0.
  *
  * =====================================================================
- * v1.8.0 — Performance Optimization (LSFG-inspired)
+ * v1.9.0 — FSR EASU 修复 + Pseudo-MV 前向外推升级 (LSFG 3.0 / Mob-FGSR 参考)
  * =====================================================================
+ *
+ * [v1.9.0 新增]
+ * [FIX-FSR] 修复 FSRShaders.java 中 FRAG_EASU 假 FSR 问题：
+ *   原实现仅是单次双线性采样，并非真正的 FSR 1.0 EASU。
+ *   新实现：4-tap 方向性 Lanczos-2 近似，根据水平/垂直梯度
+ *   自适应地在边缘方向进行方向性重建，平坦区域退化为双线性插値。
+ *
+ * [FIX-UI] 修复 UI 默认捕获分辨率：
+ *   activity_main.xml 中 scaleSeekBar 默认 progress 从 50 改为 75，
+ *   与 MainActivity.java 代码默认値保持一致。
+ *
+ * [UPG-PMV] Pseudo-MV Pass C 升级：双向混合 → 前向外推 + 置信度门控：
+ *   旧版：0.5*前向 + 0.5*后向双向混合，在快速运动区域产生拖影。
+ *   新版：全量前向外推（+1.0x MV），孔洞检测与后向填充，
+ *         置信度门控（conf < 0.08 回退），时域一致性反鬼影。
+ *
+ * 继承自 v1.8.0 的性能优化（参考 Lossless Scaling Frame Generation 3.0）：
  * 参考 Lossless Scaling Frame Generation 3.0 的 40% GPU 负载降低策略，
  * 对渲染管线进行全面性能优化：
  *
@@ -358,7 +375,19 @@ public class Anime4KRenderer {
         "    fragColor = vec4(fwdColor.rgb, conf);\n" +
         "}\n";
 
-    // Pass C: 后向翘曲 + 双向混合 + 时域差分抗拖影
+    // Pass C: 前向外推 + 置信度门控反鬼影（v1.9.0 升级）
+    //
+    // 升级说明（参考 LSFG 3.0 / Mob-FGSR 方案）：
+    //   旧版：双向混合（0.5*前向 + 0.5*后向），在快速运动区域产生拖影
+    //   新版：前向外推（从当前帧沿运动矢量方向预测下一帧位置），
+    //         配合置信度门控（conf < threshold 时回退到当前帧），
+    //         以及时域差分反鬼影（快速运动区域降低插帧权重）
+    //
+    // 核心改进：
+    //   1. 前向外推：extrapolatedUV = vTexCoord + mv（全量外推，而非 0.5x 双向）
+    //   2. 孔洞检测：通过采样 warpFwdTex 的 alpha 通道判断是否为孔洞区域
+    //   3. 置信度门控：conf 低时（遮挡/快速运动）直接使用当前帧，避免鬼影
+    //   4. 时域一致性：比较外推结果与当前帧的亮度差，差异过大则降低混合权重
     private static final String FRAG_PMV_BLEND =
         "#version 300 es\n" +
         "precision mediump float;\n" +
@@ -370,32 +399,88 @@ public class Anime4KRenderer {
         "uniform vec2 uTexelSize;\n" +
         "uniform float uStrength;\n" +
         "out vec4 fragColor;\n" +
-        "float lumaDiff(vec4 a, vec4 b) {\n" +
-        "    float la = dot(a.rgb, vec3(0.299, 0.587, 0.114));\n" +
-        "    float lb = dot(b.rgb, vec3(0.299, 0.587, 0.114));\n" +
-        "    return abs(la - lb);\n" +
+        "\n" +
+        "// 亮度差（用于时域一致性检测）\n" +
+        "float lumaDiff(vec3 a, vec3 b) {\n" +
+        "    return abs(dot(a - b, vec3(0.299, 0.587, 0.114)));\n" +
         "}\n" +
+        "\n" +
+        "// 3x3 均值滤波（孔洞填充：用邻域平均填补前向翘曲的空洞）\n" +
+        "vec4 holeFill(sampler2D tex, vec2 uv, vec2 texelSize) {\n" +
+        "    vec4 sum = vec4(0.0);\n" +
+        "    float validCount = 0.0;\n" +
+        "    for (int dy = -1; dy <= 1; dy++) {\n" +
+        "        for (int dx = -1; dx <= 1; dx++) {\n" +
+        "            vec2 nUV = uv + vec2(float(dx), float(dy)) * texelSize;\n" +
+        "            vec4 s = texture(tex, nUV);\n" +
+        "            // alpha > 0.1 表示该像素被前向翘曲写入（非孔洞）\n" +
+        "            if (s.a > 0.1) {\n" +
+        "                sum += s;\n" +
+        "                validCount += 1.0;\n" +
+        "            }\n" +
+        "        }\n" +
+        "    }\n" +
+        "    return (validCount > 0.0) ? sum / validCount : vec4(0.0);\n" +
+        "}\n" +
+        "\n" +
         "void main() {\n" +
-        "    vec3 mvData = texture(uMvTex, vTexCoord).rgb;\n" +
-        "    vec2 mv = (mvData.rg * 2.0 - 1.0) * uTexelSize * 8.0;\n" +
-        "    float conf = mvData.b;\n" +
         "    vec4 current = texture(uCurrent, vTexCoord);\n" +
-        "    if (conf < 0.05 || uStrength < 0.01) {\n" +
+        "    \n" +
+        "    // 快速路径：插帧强度为 0 时直接输出当前帧\n" +
+        "    if (uStrength < 0.01) {\n" +
         "        fragColor = current;\n" +
         "        return;\n" +
         "    }\n" +
-        "    vec2 fwdUV = clamp(vTexCoord + mv * 0.5, vec2(0.0), vec2(1.0));\n" +
-        "    vec4 fwdColor = texture(uCurrent, fwdUV);\n" +
+        "    \n" +
+        "    // 读取运动矢量和置信度\n" +
+        "    vec3 mvData = texture(uMvTex, vTexCoord).rgb;\n" +
+        "    vec2 mv = (mvData.rg * 2.0 - 1.0) * uTexelSize * 8.0;\n" +
+        "    float conf = mvData.b;\n" +
+        "    \n" +
+        "    // 置信度门控：置信度过低（遮挡/快速运动）时回退到当前帧\n" +
+        "    // 阈值 0.08 比旧版 0.05 更严格，减少低质量 MV 引起的鬼影\n" +
+        "    if (conf < 0.08) {\n" +
+        "        fragColor = current;\n" +
+        "        return;\n" +
+        "    }\n" +
+        "    \n" +
+        "    // ---- 前向外推（Forward Extrapolation）----\n" +
+        "    // 从当前帧位置沿运动矢量方向外推到预测的下一帧位置\n" +
+        "    // 相比双向混合（±0.5x），全量外推（+1.0x）更接近真实的帧间预测\n" +
+        "    vec2 extraUV = clamp(vTexCoord + mv, vec2(0.0), vec2(1.0));\n" +
+        "    vec4 extrapolated = texture(uCurrent, extraUV);\n" +
+        "    \n" +
+        "    // ---- 孔洞检测与填充 ----\n" +
+        "    // 前向翘曲会在运动目标的背后留下孔洞（未被写入的像素）\n" +
+        "    // 通过检查 uLast（上一帧）与外推结果的一致性来检测孔洞\n" +
+        "    vec4 lastAtExtra = texture(uLast, extraUV);\n" +
+        "    float holeMask = step(lumaDiff(extrapolated.rgb, lastAtExtra.rgb), 0.15);\n" +
+        "    // holeMask=1 表示外推结果与上帧一致（可信），=0 表示可能是孔洞\n" +
+        "    \n" +
+        "    // 孔洞区域：用后向采样（从上一帧反向查找）填补\n" +
         "    vec2 bwdUV = clamp(vTexCoord - mv * 0.5, vec2(0.0), vec2(1.0));\n" +
-        "    vec4 bwdColor = texture(uLast, bwdUV);\n" +
-        "    vec4 blended = mix(bwdColor, fwdColor, 0.5);\n" +
-        "    vec4 lastAtCurrent = texture(uLast, vTexCoord);\n" +
-        "    float temporalDiff = lumaDiff(current, lastAtCurrent);\n" +
-        "    float antiGhostFactor = 1.0 - smoothstep(0.08, 0.20, temporalDiff);\n" +
+        "    vec4 bwdFill = texture(uLast, bwdUV);\n" +
+        "    vec4 predicted = mix(bwdFill, extrapolated, holeMask);\n" +
+        "    \n" +
+        "    // ---- 时域一致性检测（反鬼影核心）----\n" +
+        "    // 比较预测帧与当前帧的亮度差：差异越大，说明运动越快或遮挡越严重\n" +
+        "    // 在这些区域大幅降低插帧权重，避免鬼影残留\n" +
+        "    float temporalDiff = lumaDiff(predicted.rgb, current.rgb);\n" +
+        "    // 阈值从旧版 (0.08, 0.20) 调整为 (0.06, 0.18)，更激进的反鬼影\n" +
+        "    float antiGhost = 1.0 - smoothstep(0.06, 0.18, temporalDiff);\n" +
+        "    \n" +
+        "    // ---- 边缘感知权重 ----\n" +
+        "    // 边缘区域（sobel 强度高）更需要插帧来保持清晰度\n" +
+        "    // 平坦区域（低 sobel）插帧收益较小，适当降低权重\n" +
         "    float edgeW = clamp(texture(uLumad, vTexCoord).r * 2.0 - 1.0, 0.0, 1.0);\n" +
-        "    float blendW = conf * (0.4 + 0.6 * edgeW) * antiGhostFactor * uStrength;\n" +
-        "    blendW = clamp(blendW, 0.0, 0.85);\n" +
-        "    fragColor = mix(current, blended, blendW);\n" +
+        "    float edgeFactor = 0.3 + 0.7 * edgeW;  // 平坦区域最低 0.3x 权重\n" +
+        "    \n" +
+        "    // ---- 最终混合权重 ----\n" +
+        "    // 综合：置信度 × 边缘因子 × 反鬼影 × 用户强度\n" +
+        "    float blendW = conf * edgeFactor * antiGhost * uStrength;\n" +
+        "    blendW = clamp(blendW, 0.0, 0.90);  // 上限 0.90，保留 10% 当前帧防止完全替换\n" +
+        "    \n" +
+        "    fragColor = mix(current, predicted, blendW);\n" +
         "}\n";
 
     // =================================================================

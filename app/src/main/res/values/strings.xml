@@ -10,7 +10,7 @@
     <string name="strength_label">超分强度</string>
     <string name="scale_label">捕获缩放</string>
     <string name="opacity_label">叠加层透明度</string>
-    <string name="pseudo_mv_label">异步时间扭曲 (Async Time Warp / Reprojection)</string>
+    <string name="pseudo_mv_label">伪运动矢量插帧 (Pseudo-MV / ATW)</string>
     <string name="float_button_stop">停止服务</string>
     <string name="float_button_home">返回主界面</string>
 </resources>

@@ -121,7 +121,7 @@
                         android:layout_weight="1"
                         android:min="10"
                         android:max="100"
-                        android:progress="50"
+                        android:progress="75"
                         android:progressTint="#FF03DAC5"
                         android:thumbTint="#FF03DAC5"/>
 
@@ -129,7 +129,7 @@
                         android:id="@+id/scaleValue"
                         android:layout_width="48dp"
                         android:layout_height="wrap_content"
-                        android:text="50%"
+                        android:text="75%"
                         android:textSize="14sp"
                         android:textColor="#FFFFFFFF"
                         android:gravity="end"/>
