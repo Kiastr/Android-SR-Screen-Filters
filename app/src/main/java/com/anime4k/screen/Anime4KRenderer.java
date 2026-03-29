@@ -750,11 +750,13 @@ public class Anime4KRenderer {
             }
 
         } else {
-            // ---- FSR 管线 (v1.9.9 亮度恢复版) ----
+            // ---- FSR 管线 (v1.10.1 终极稳定版) ----
             
             // 1. EASU: 边缘重建 (Input -> fsrTempTexture)
             GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fbo[6]);
-            // [FIX-v1.9.9] 移除 glClear(0,0,0,1)，防止半像素对齐偏差导致的黑底渗透
+            // [FIX-v1.10.1] 重新开启 glClear，但设为全透明 (0,0,0,0) 彻底切断残影反馈链，同时保住亮度
+            GLES30.glClearColor(0f, 0f, 0f, 0f);
+            GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT);
             GLES30.glViewport(0, 0, outputWidth, outputHeight);
             GLES30.glUseProgram(programFsrEasu);
             bindTex(0, inputTexture); GLES30.glUniform1i(uEasu_texture, 0);
@@ -764,6 +766,8 @@ public class Anime4KRenderer {
 
             // 2. MAS: 自适应锐化 (fsrTempTexture -> outputTexture)
             GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fbo[4]);
+            GLES30.glClearColor(0f, 0f, 0f, 0f);
+            GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT);
             GLES30.glViewport(0, 0, outputWidth, outputHeight);
             GLES30.glUseProgram(programFsrRcas);
             bindTex(0, fsrTempTexture); GLES30.glUniform1i(uRcas_texture, 0);
@@ -775,6 +779,8 @@ public class Anime4KRenderer {
             if (pmvStrength > 0.01f) {
                 // 插帧模式：输出到 lastOutputTexture
                 GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fbo[5]);
+                GLES30.glClearColor(0f, 0f, 0f, 0f);
+                GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT);
                 GLES30.glViewport(0, 0, outputWidth, outputHeight);
                 GLES30.glUseProgram(programATW);
                 bindTex(0, currentTexture);    GLES30.glUniform1i(uATW_texture,     0);
@@ -790,6 +796,11 @@ public class Anime4KRenderer {
                 bindFboTexture(fbo[4], outputTexture);
                 bindFboTexture(fbo[5], lastOutputTexture);
                 currentTexture = outputTexture;
+            } else {
+                // [FIX-v1.10.1] 非插帧模式：强制清空历史纹理，彻底阻断跨帧反馈
+                GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fbo[5]);
+                GLES30.glClearColor(0f, 0f, 0f, 0f);
+                GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT);
             }
         }
 
