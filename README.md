@@ -1,6 +1,6 @@
 # Android-SR-Screen-Filters
 
-本项目是基于 Anime4K 技术的安卓屏幕滤镜应用，集成了 AMD FSR (FidelityFX Super Resolution) 1.0 技术，旨在提升安卓设备上的视频和图像显示质量。
+本项目是基于 Anime4K 技术的安卓屏幕滤镜应用，集成了 AMD FSR (FidelityFX Super Resolution) 1.0 技术，旨在提升安卓设备上的视频和图像显示质量，通过录屏功能实现了在几乎所有app上实施超分辨率提升屏幕内容画质Through the screen recording function, it implements super-resolution on almost all apps to improve the quality of screen content.
 
 ## 项目结构
 
