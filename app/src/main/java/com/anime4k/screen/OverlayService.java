@@ -46,26 +46,17 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /**
  * OverlayService — 屏幕超分叠加层服务
  *
- * LSFG-Style Low-Latency Pipeline v1.6.0:
- * 参考 Lossless Scaling (LSFG) 的核心架构思路，将帧捕获从
- * Choreographer 轮询（拉模式）改为 ImageReader 硬件回调（推模式）。
+ * v1.7.0 — 回退至 v1.5.0 稳定架构 + 暂停清屏改进
  *
- * 架构变更说明：
- * [LS-1] 推模式捕获 (Push-Mode Capture):
- *   废弃 Choreographer.postFrameCallback 轮询机制。
- *   改为 ImageReader.setOnImageAvailableListener，当 VirtualDisplay
- *   渲染完一帧并放入 Buffer 时，该回调由硬件驱动立即触发。
- *   消除了 VSYNC 轮询的相位差和缓冲区积压，将基础管线延迟降低约 1 帧（~16ms）。
- *   这与 LSFG 从 WGC 切换到 DXGI 事件驱动捕获的原理完全一致。
- *
- * [LS-2] 帧节流保护 (Frame Throttle):
- *   使用 AtomicBoolean frameInFlight 防止 GPU 处理跟不上时回调堆积。
- *   当处理线程繁忙时，新到达的帧会被 acquireLatestImage 丢弃（取最新帧），
- *   而不是在队列中积压，确保延迟始终最低。
- *
- * 继承自 v1.4.0 的优化：
- * [CPU-1] EGL_CONTEXT_PRIORITY_HIGH  [CPU-5] EGL 窗口表面懒创建
- * [CPU-7] 方向变化防抖 150ms         [CPU-8] 纳秒精度 FPS 统计
+ * 帧调度：Choreographer 拉模式（v1.5.0 验证稳定）
+ * [CPU-1] EGL_CONTEXT_PRIORITY_HIGH: 请求高优先级 GPU 上下文
+ * [CPU-2] ImageReader 缓冲区数量 3: 减少帧丢弃
+ * [CPU-3] acquireLatestImage + 立即 close: 保持最低延迟
+ * [CPU-4] 帧率自适应节流 (Frame Pacing): AtomicBoolean 防止队列积压
+ * [CPU-5] EGL 窗口表面懒创建 + 复用
+ * [CPU-7] 方向变化防抖延迟 150ms
+ * [CPU-8] FPS 统计使用 System.nanoTime()
+ * [NEW]   暂停时主动渲染透明帧清空 GPU 缓冲区，防止画面残留
  */
 public class OverlayService extends Service {
 
@@ -103,14 +94,16 @@ public class OverlayService extends Service {
     private volatile boolean isRunning = false;
     private volatile boolean isPaused = false;
     private int frameCount = 0;
-    private long fpsStartTimeNs = 0; // [CPU-8] 纳秒精度
+    private long fpsStartTimeNs = 0;
 
-    // [LS-2] 帧节流标志：当处理线程正在处理帧时，新到达的回调不重复投递
+    private android.view.Choreographer.FrameCallback frameCallback;
+
+    // [CPU-4] 帧率节流标志
     private final AtomicBoolean frameInFlight = new AtomicBoolean(false);
 
     private EGLDisplay eglDisplay;
     private EGLContext eglContext;
-    private EGLSurface eglSurface;      // pbuffer（离屏渲染用）
+    private EGLSurface eglSurface;       // pbuffer（离屏渲染用）
     private EGLSurface eglOverlaySurface; // 窗口表面（叠加层输出用）
 
     private volatile boolean surfaceReady = false;
@@ -215,7 +208,6 @@ public class OverlayService extends Service {
                 int newOrientation = newConfig.orientation;
                 if (newOrientation != lastOrientation) {
                     lastOrientation = newOrientation;
-                    // [CPU-7] 防抖延迟从 300ms 降至 150ms
                     mainHandler.postDelayed(OverlayService.this::handleOrientationChange, 150);
                 }
             }
@@ -230,16 +222,8 @@ public class OverlayService extends Service {
         captureWidth  = ((int) (screenWidth  * captureScale) / 2) * 2;
         captureHeight = ((int) (screenHeight * captureScale) / 2) * 2;
 
-        // [BUG-FIX-2] 方向变化时 SurfaceView 会重建，必须先将 surfaceReady 置 false
-        // 防止 processFrame 在新 Surface 就绪前向无效表面渲染
-        surfaceReady = false;
-
         processingHandler.post(() -> {
             try {
-                // [BUG-FIX-3] 重置节流标志：方向变化可能发生在帧处理中途，
-                // 若不重置，frameInFlight 可能永远卡在 true，导致叠加层永久失效
-                frameInFlight.set(false);
-
                 if (virtualDisplay != null) { virtualDisplay.release(); virtualDisplay = null; }
                 if (imageReader != null)    { imageReader.close();      imageReader    = null; }
 
@@ -253,7 +237,6 @@ public class OverlayService extends Service {
                     renderer.init(captureWidth, captureHeight, screenWidth, screenHeight);
                 }
 
-                // [CPU-2] 3 个缓冲区减少帧丢弃
                 imageReader = ImageReader.newInstance(captureWidth, captureHeight,
                         PixelFormat.RGBA_8888, 3);
                 virtualDisplay = mediaProjection.createVirtualDisplay(
@@ -261,20 +244,9 @@ public class OverlayService extends Service {
                         DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
                         imageReader.getSurface(), null, processingHandler);
 
-                // [LS-1] 方向变化后重新注册推模式监听器
-                // [BUG-FIX-1] 必须用 processingHandler.post 投递，不能直接调用 processFrame()
-                // 直接调用会在 ImageReader 回调线程中同步执行，阻塞内部回调队列，导致后续帧无法到达
-                imageReader.setOnImageAvailableListener(reader -> {
-                    if (!isRunning) return;
-                    if (frameInFlight.compareAndSet(false, true)) {
-                        processingHandler.post(OverlayService.this::processFrame);
-                    }
-                }, processingHandler);
-
                 Log.d(TAG, "Orientation change handled: " + screenWidth + "x" + screenHeight);
             } catch (Exception e) {
                 Log.e(TAG, "Error on orientation change", e);
-                frameInFlight.set(false); // 异常时也要确保释放节流标志
             }
         });
     }
@@ -314,7 +286,6 @@ public class OverlayService extends Service {
             }
             @Override
             public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
-                // [CPU-5] Surface 变化时销毁旧的 EGL 窗口表面，下次渲染时懒创建
                 if (processingHandler != null) {
                     processingHandler.post(() -> {
                         if (eglOverlaySurface != null && eglOverlaySurface != EGL14.EGL_NO_SURFACE) {
@@ -337,7 +308,7 @@ public class OverlayService extends Service {
 
     private void startCapture(int resultCode, Intent data) {
         processingThread = new HandlerThread("Anime4K-Processing",
-                android.os.Process.THREAD_PRIORITY_DISPLAY); // 提升线程优先级
+                android.os.Process.THREAD_PRIORITY_DISPLAY);
         processingThread.start();
         processingHandler = new Handler(processingThread.getLooper());
 
@@ -348,19 +319,14 @@ public class OverlayService extends Service {
             @Override public void onStop() { stopSelf(); }
         }, processingHandler);
 
-        // [BUG-FIX-4] 竞态条件修复：
-        // 必须将 ImageReader 创建、VirtualDisplay 创建、EGL 初始化、监听器注册
-        // 全部放在同一个 processingHandler.post() 中串行执行。
-        //
-        // 原来的错误写法：createVirtualDisplay 在 post() 外面，导致 VirtualDisplay
-        // 立即开始向 ImageReader 推帧，3 个缓冲区很快被填满。等 post() 里的
-        // setOnImageAvailableListener 执行时，缓冲区已满，新帧无法入队，
-        // 回调永远不会触发，叠加层从启动起就完全失效。
-        processingHandler.post(() -> {
-            // [CPU-2] 3 个缓冲区，在 EGL 初始化前创建 ImageReader 但不启动 VirtualDisplay
-            imageReader = ImageReader.newInstance(captureWidth, captureHeight,
-                    PixelFormat.RGBA_8888, 3);
+        imageReader = ImageReader.newInstance(captureWidth, captureHeight,
+                PixelFormat.RGBA_8888, 3);
+        virtualDisplay = mediaProjection.createVirtualDisplay(
+                "Anime4KCapture", captureWidth, captureHeight, screenDensity,
+                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                imageReader.getSurface(), null, processingHandler);
 
+        processingHandler.post(() -> {
             initEGL();
             renderer = new Anime4KRenderer();
             renderer.setRefineStrength(refineStrength);
@@ -372,41 +338,33 @@ public class OverlayService extends Service {
             isRunning = true;
             fpsStartTimeNs = System.nanoTime();
 
-            // [LS-1] 先注册监听器，再创建 VirtualDisplay
-            // 这样 VirtualDisplay 产生的第一帧就能被监听器捕获到
-            imageReader.setOnImageAvailableListener(reader -> {
-                if (!isRunning) return;
-                // [LS-2] 节流保护：仅当上一帧处理完毕时才投递新帧
-                // 必须用 processingHandler.post 而非直接调用 processFrame()
-                // 直接调用会在回调线程中同步执行，阻塞 ImageReader 内部回调队列
-                if (frameInFlight.compareAndSet(false, true)) {
-                    processingHandler.post(OverlayService.this::processFrame);
-                }
-            }, processingHandler);
-
-            // VirtualDisplay 最后创建，此时监听器已就绪，不会丢失任何帧
-            virtualDisplay = mediaProjection.createVirtualDisplay(
-                    "Anime4KCapture", captureWidth, captureHeight, screenDensity,
-                    DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                    imageReader.getSurface(), null, processingHandler);
+            // Choreographer 驱动帧调度，带节流保护
+            mainHandler.post(() -> {
+                frameCallback = frameTimeNanos -> {
+                    if (!isRunning) return;
+                    if (frameInFlight.compareAndSet(false, true)) {
+                        processingHandler.post(OverlayService.this::processFrame);
+                    }
+                    android.view.Choreographer.getInstance().postFrameCallback(frameCallback);
+                };
+                android.view.Choreographer.getInstance().postFrameCallback(frameCallback);
+            });
         });
     }
 
     private void processFrame() {
-        // [LS-2] 无论是否成功处理，最终都要释放 in-flight 标志
         try {
             if (!isRunning || isPaused || !surfaceReady) return;
 
-            // acquireLatestImage 会自动丢弃队列中的旧帧，始终取最新帧
             Image image = imageReader.acquireLatestImage();
             if (image == null) return;
 
             try {
                 Image.Plane[] planes = image.getPlanes();
                 ByteBuffer buffer    = planes[0].getBuffer();
-                int pixelStride      = planes[0].getPixelStride(); // RGBA_8888 始终为 4
+                int pixelStride      = planes[0].getPixelStride();
                 int rowStride        = planes[0].getRowStride();
-                int rowPixels        = rowStride / pixelStride;    // 含 Padding 的每行像素数
+                int rowPixels        = rowStride / pixelStride;
 
                 makePbufferCurrent();
                 int outputTex = renderer.processFromBuffer(buffer, captureWidth, captureHeight, rowPixels);
@@ -415,11 +373,9 @@ public class OverlayService extends Service {
                     renderToOverlay(outputTex);
                 }
             } finally {
-                // 确保 Image 在使用完毕后立即关闭，释放 ImageReader 缓冲区
                 image.close();
             }
 
-            // [CPU-8] 纳秒精度 FPS 统计
             frameCount++;
             long nowNs = System.nanoTime();
             long elapsedNs = nowNs - fpsStartTimeNs;
@@ -435,13 +391,12 @@ public class OverlayService extends Service {
         } catch (Exception e) {
             Log.e(TAG, "Error processing frame", e);
         } finally {
-            frameInFlight.set(false); // [LS-2] 释放节流标志
+            frameInFlight.set(false);
         }
     }
 
     private void renderToOverlay(int texture) {
         try {
-            // [CPU-5] EGL 窗口表面懒创建：仅在 null 时创建，避免每帧检查重建
             if (eglOverlaySurface == null || eglOverlaySurface == EGL14.EGL_NO_SURFACE) {
                 Surface s = overlayOutputSurface;
                 if (s == null || !s.isValid()) return;
@@ -464,14 +419,30 @@ public class OverlayService extends Service {
         }
     }
 
+    /**
+     * 清空叠加层 Surface 的 GPU 缓冲区（渲染一帧全透明画面）
+     * 用于暂停时彻底清除残留画面
+     */
+    private void clearOverlaySurface() {
+        try {
+            if (eglOverlaySurface != null && eglOverlaySurface != EGL14.EGL_NO_SURFACE
+                    && renderer != null) {
+                EGL14.eglMakeCurrent(eglDisplay, eglOverlaySurface, eglOverlaySurface, eglContext);
+                renderer.clearSurface(screenWidth, screenHeight);
+                EGL14.eglSwapBuffers(eglDisplay, eglOverlaySurface);
+                makePbufferCurrent();
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Error clearing overlay on pause", e);
+        }
+    }
+
     private void initEGL() {
         eglDisplay = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY);
         int[] version = new int[2];
         EGL14.eglInitialize(eglDisplay, version, 0, version, 1);
         EGLConfig config = getEGLConfig();
 
-        // [CPU-1] 请求高优先级 EGL 上下文（需要 EGL_IMG_context_priority 扩展支持）
-        // 若设备不支持，会静默回退到普通优先级
         int[] contextAttribs;
         String extensions = EGL14.eglQueryString(eglDisplay, EGL14.EGL_EXTENSIONS);
         if (extensions != null && extensions.contains("EGL_IMG_context_priority")) {
@@ -574,21 +545,8 @@ public class OverlayService extends Service {
                 case 1:
                     isPaused = !isPaused;
                     if (isPaused) {
-                        // 先在 GPU 层主动渲染一帧全透明画面，清空 Surface 缓冲区中的残留内容
-                        // 仅靠 WindowManager.alpha=0 无法清除 GPU 缓冲区，在某些设备上会残留
-                        processingHandler.post(() -> {
-                            try {
-                                if (eglOverlaySurface != null && eglOverlaySurface != EGL14.EGL_NO_SURFACE
-                                        && renderer != null) {
-                                    EGL14.eglMakeCurrent(eglDisplay, eglOverlaySurface, eglOverlaySurface, eglContext);
-                                    renderer.clearSurface(screenWidth, screenHeight);
-                                    EGL14.eglSwapBuffers(eglDisplay, eglOverlaySurface);
-                                    makePbufferCurrent();
-                                }
-                            } catch (Exception e) {
-                                Log.e(TAG, "Error clearing overlay on pause", e);
-                            }
-                        });
+                        // [NEW] 先在 GPU 层主动渲染透明帧，清空 Surface 缓冲区中的残留内容
+                        processingHandler.post(this::clearOverlaySurface);
                         // 同时将窗口透明度设为 0，双重保险
                         mainHandler.post(() -> {
                             if (overlaySurfaceView != null && overlayParams != null) {
