@@ -163,10 +163,10 @@ public class OverlayService extends Service {
         if ("START".equals(action)) {
             projectionResultCode = intent.getIntExtra("resultCode", 0);
             projectionData       = intent.getParcelableExtra("data");
-            captureScale         = intent.getIntExtra("scale", 50) / 100.0f;
+            captureScale         = intent.getIntExtra("scale", 100) / 100.0f;
             refineStrength       = intent.getIntExtra("strength", 50) / 100.0f;
             pseudoMVStrength     = intent.getIntExtra("pseudoMV", 50) / 100.0f;
-            overlayOpacity       = intent.getIntExtra("opacity", 100) / 100.0f;
+            overlayOpacity       = intent.getIntExtra("opacity", 8) / 100.0f;
             floatButtonVisible   = intent.getBooleanExtra("floatButton", true);
             fsrEnabled           = intent.getBooleanExtra("fsrEnabled", false);
             fsrSharpness         = intent.getIntExtra("fsrSharpness", 20) / 100.0f;
@@ -188,7 +188,7 @@ public class OverlayService extends Service {
             public void onReceive(Context context, Intent intent) {
                 String action = intent.getAction();
                 if ("com.anime4k.screen.UPDATE_OPACITY".equals(action)) {
-                    overlayOpacity = intent.getIntExtra("opacity", 100) / 100.0f;
+                    overlayOpacity = intent.getIntExtra("opacity", 8) / 100.0f;
                     applyOverlayOpacity();
                 } else if ("com.anime4k.screen.TOGGLE_FLOAT_BUTTON".equals(action)) {
                     toggleFloatButtonVisibility(intent.getBooleanExtra("show", true));
