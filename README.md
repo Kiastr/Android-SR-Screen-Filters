@@ -11,8 +11,7 @@
 ## 最新版本说明 
 
 - **集成 FSR 1.0**: 引入了 AMD 的 FSR 技术进行超分辨率处理。
-- **修复内容**: 修复了 `FSRShaders.java` 中的字符串未闭合错误，确保项目能够正常编译。
-- **APK 下载**: 根目录下的 `Anime4KScreen-v1.3-Fix.apk`。
+- **APK 下载**: github手机版屏幕最下方Releases标签，github电脑版右边Releases标签
 
 ## 编译环境
 
